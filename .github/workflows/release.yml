@@ -8,6 +8,33 @@ permissions:
   contents: write
 
 jobs:
+  attach-installers:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate and test installers
+        shell: powershell
+        run: |
+          ./tests/install-windows.test.ps1
+          ./tests/one-click.test.ps1
+          ./tests/github-proxy.test.ps1
+      - name: Attach installers and documentation
+        shell: powershell
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_REPO: ${{ github.repository }}
+        run: |
+          $release = gh release view $env:RELEASE_TAG --repo $env:RELEASE_REPO --json assets | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect release assets.' }
+          foreach ($asset in @('install.ps1', 'install-komari.cmd', 'install.sh', 'FORK_zh-CN.md')) {
+            if ($release.assets.name -notcontains $asset) {
+              gh release upload $env:RELEASE_TAG $asset --repo $env:RELEASE_REPO
+              if ($LASTEXITCODE -ne 0) { throw "Cannot attach $asset." }
+            }
+          }
+
   build-and-attach:
     if: ${{ !github.event.release.prerelease }}
     runs-on: ubuntu-latest

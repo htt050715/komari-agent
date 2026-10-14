@@ -13,10 +13,18 @@
 
 ## Windows 安装 / 覆盖升级
 
-推荐下载 [install-komari.cmd](https://github.com/htt050715/komari-agent/releases/latest/download/install-komari.cmd)，
+推荐下载 [install-komari.cmd](https://ghproxy.05160715.xyz/https://github.com/htt050715/komari-agent/releases/latest/download/install-komari.cmd)，
 双击运行并确认管理员权限。只需要这一个文件，无需预装 Go 或 Git。
 已有服务时选择覆盖或取消，默认取消；全新安装时按提示填写面板地址和 Token。
 脚本校验下载的安装器，并固定使用它所属的 Release 版本。
+如下载代理暂时不可用，可使用 [GitHub 直连下载](https://github.com/htt050715/komari-agent/releases/latest/download/install-komari.cmd)。
+
+一键脚本、Windows/Linux 安装器和客户端自动更新默认先走 `https://ghproxy.05160715.xyz`，
+网络或 HTTP 错误时回退 GitHub 直连。Windows 安装器与自动更新还会在校验失败时尝试直连，
+Windows 安装器必须取得 Release 的 SHA-256，校验通过后才替换旧程序。
+客户端版本 API 返回无效 JSON 时也会回退。设置了 `GITHUB_TOKEN` 的客户端请求只走直连，避免令牌泄露到代理。
+客户端可用环境变量 `KOMARI_GITHUB_PROXY` 更换代理，显式设置为空可禁用代理；
+安装器可用 `--install-ghproxy` 更换代理。NSSM 的非 GitHub 下载不走这个代理。
 
 下载仓库或 Release 中的 `install.ps1`，在 PowerShell 中运行：
 
@@ -53,8 +61,9 @@ NSSM 服务启动成功不等于面板连接成功，安装后请在面板确认
 go test -timeout 60s -skip 'Test(ICMP|TCP|HTTP)Ping' ./...
 powershell -NoProfile -File tests/install-windows.test.ps1
 powershell -NoProfile -File tests/one-click.test.ps1
+powershell -NoProfile -File tests/github-proxy.test.ps1
 $env:CGO_ENABLED = '0'
-go build -trimpath -ldflags "-s -w -X github.com/komari-monitor/komari-agent/update.CurrentVersion=1.5.12" -o komari-agent-windows-amd64.exe
+go build -trimpath -ldflags "-s -w -X github.com/komari-monitor/komari-agent/update.CurrentVersion=1.5.13" -o komari-agent-windows-amd64.exe
 ```
 
 Release 文件名保持 `komari-agent-windows-amd64.exe`、`komari-agent-windows-arm64.exe`、

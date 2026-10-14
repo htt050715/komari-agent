@@ -1,5 +1,6 @@
 # Test the packaged launcher without elevation, networking, or real service changes.
 $ErrorActionPreference = 'Stop'
+$GitHubProxy = 'https://ghproxy.05160715.xyz'
 $root = Split-Path $PSScriptRoot -Parent
 & (Join-Path $root 'build-one-click.ps1')
 $source = [IO.File]::ReadAllText((Join-Path $root 'install-one-click.ps1'))
@@ -56,7 +57,7 @@ $Release.assets[0].browser_download_url = 'https://github.com/htt050715/komari-a
 
 function Get-Service { param($Name, $ErrorAction) return $script:ExistingService }
 function Get-WithRetry {
-    param($Url, $Destination)
+    param($Url, $Destination, $ExpectedDigest)
     $script:DownloadCalls++
     if ($Destination) { [IO.File]::WriteAllText($Destination, $script:FakeInstaller, [Text.UTF8Encoding]::new($false)); return }
     return $script:Release
@@ -72,6 +73,7 @@ Answers @('1')
 $global:OneClickTestArgs = $null
 Assert ((Invoke-SelectedInstall) -eq 0) 'Upgrade returned failure.'
 Assert ($OneClickTestArgs -notcontains '--token') 'Upgrade should preserve existing parameters.'
+Assert ($OneClickTestArgs -contains '--install-ghproxy' -and $OneClickTestArgs -contains $GitHubProxy) 'Upgrade did not pass the proxy to the installer.'
 Assert ($OneClickTestArgs -contains 'overwrite' -and $OneClickTestArgs -contains '1.5.12') 'Upgrade lost overwrite choice or pinned release version.'
 
 Answers @('1')

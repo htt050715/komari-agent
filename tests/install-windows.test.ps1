@@ -12,7 +12,7 @@ foreach ($fn in $ast.FindAll({ param($node) $node -is [Management.Automation.Lan
 function Assert($condition, [string]$message) { if (-not $condition) { throw $message } }
 function Read-Host { param($Prompt) return $script:Answer }
 function Invoke-WebRequest {
-    param($Uri, $OutFile, [switch]$UseBasicParsing, $ErrorAction)
+    param($Uri, $OutFile, [switch]$UseBasicParsing, $ErrorAction, $TimeoutSec)
     $script:Calls.Add('download')
     if ($script:FailDownload) { throw 'Simulated download failure' }
     [IO.File]::WriteAllText($OutFile, 'new-agent')

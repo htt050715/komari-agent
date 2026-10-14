@@ -8,6 +8,7 @@ exit /b %errorlevel%
 # Source for the standalone install-komari.cmd launcher. Requires Windows PowerShell 5.1.
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$GitHubProxy = 'https://ghproxy.05160715.xyz'
 
 function Get-InstallChoice {
     param([bool]$Exists)
@@ -53,19 +54,30 @@ function Get-InstallerAsset {
 }
 
 function Get-WithRetry {
-    param([string]$Url, [string]$Destination)
+    param([string]$Url, [string]$Destination, [string]$ExpectedDigest)
+    $urls = @($Url)
+    if ($GitHubProxy) { $urls = @(($GitHubProxy.TrimEnd('/') + '/' + $Url), $Url) }
     for ($attempt = 1; $attempt -le 3; $attempt++) {
-        try {
-            if ($Destination) {
-                Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing -TimeoutSec 60
-                return
+        foreach ($sourceUrl in $urls) {
+            try {
+                if ($Destination) {
+                    Invoke-WebRequest -Uri $sourceUrl -OutFile $Destination -UseBasicParsing -TimeoutSec 60
+                    if ($ExpectedDigest -and $ExpectedDigest -ne ('sha256:' + (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash)) {
+                        throw '下载文件 SHA-256 校验失败。'
+                    }
+                    return
+                }
+                $result = Invoke-RestMethod -Uri $sourceUrl -UseBasicParsing -TimeoutSec 30
+                if (-not $result.tag_name) { throw '版本 API 返回了无效内容。' }
+                return $result
+            } catch {
+                $lastError = $_
+                if ($sourceUrl -ne $Url) { Write-Host '代理请求失败，正在尝试 GitHub 直连……' -ForegroundColor Yellow }
             }
-            return Invoke-RestMethod -Uri $Url -UseBasicParsing -TimeoutSec 30
-        } catch {
-            if ($attempt -eq 3) { throw }
-            Write-Host "下载失败，正在重试（$attempt/3）……" -ForegroundColor Yellow
-            Start-Sleep -Seconds 2
         }
+        if ($attempt -eq 3) { throw $lastError }
+        Write-Host "下载失败，正在重试（$attempt/3）……" -ForegroundColor Yellow
+        Start-Sleep -Seconds 2
     }
 }
 
@@ -98,7 +110,7 @@ function Invoke-SelectedInstall {
         return 0
     }
 
-    $installerArgs = @('--install-service-name', $serviceName, '--install-existing', 'overwrite')
+    $installerArgs = @('--install-service-name', $serviceName, '--install-existing', 'overwrite', '--install-ghproxy', $GitHubProxy)
     if ($existingService) {
         Write-Host '将沿用已有服务的安装目录、配置和启动参数。' -ForegroundColor Green
     } else {
@@ -113,7 +125,7 @@ function Invoke-SelectedInstall {
         Write-Host '正在获取你的仓库的最新稳定版本……' -ForegroundColor Cyan
         $release = Get-WithRetry -Url 'https://api.github.com/repos/htt050715/komari-agent/releases/latest'
         $asset = Get-InstallerAsset -Release $release
-        Get-WithRetry -Url $asset.browser_download_url -Destination $installerPath
+        Get-WithRetry -Url $asset.browser_download_url -Destination $installerPath -ExpectedDigest $asset.digest
         $actual = (Get-FileHash -LiteralPath $installerPath -Algorithm SHA256).Hash
         if ($asset.digest -ne ('sha256:' + $actual)) { throw '安装文件校验失败，已停止安装。' }
         $installerArgs += @('--install-version', [string]$release.tag_name)

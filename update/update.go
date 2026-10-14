@@ -358,23 +358,14 @@ func listGitHubReleases(owner, repo string) ([]githubRelease, error) {
 			req.Header.Set("Authorization", "Bearer "+token)
 		}
 
-		resp, err := getHTTPClient().Do(req)
+		var pageReleases []githubRelease
+		err = fetchGitHub(getHTTPClient(), req, func(resp *http.Response) error {
+			pageReleases = nil
+			return json.NewDecoder(resp.Body).Decode(&pageReleases)
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list GitHub releases: %w", err)
 		}
-
-		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-			body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("GitHub releases API returned status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
-		}
-
-		var pageReleases []githubRelease
-		if err := json.NewDecoder(resp.Body).Decode(&pageReleases); err != nil {
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("failed to decode GitHub releases response: %w", err)
-		}
-		_ = resp.Body.Close()
 
 		releases = append(releases, pageReleases...)
 		if len(pageReleases) < 100 {
@@ -407,10 +398,10 @@ func currentExecutablePath() (string, error) {
 	return cmdPath, nil
 }
 
-// openAssetStream 打开 release asset 下载流。
+// assetRequest 创建 release asset 下载请求。
 // 设置了 GITHUB_TOKEN 时走 Assets API（兼容私有仓库），
 // 否则直接使用浏览器下载地址（公开仓库）。
-func openAssetStream(client *http.Client, owner, repo string, asset githubReleaseAsset) (io.ReadCloser, error) {
+func assetRequest(owner, repo string, asset githubReleaseAsset) (*http.Request, error) {
 	token := os.Getenv("GITHUB_TOKEN")
 
 	var endpoint string
@@ -432,17 +423,7 @@ func openAssetStream(client *http.Client, owner, repo string, asset githubReleas
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to download release asset: %w", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		_ = resp.Body.Close()
-		return nil, fmt.Errorf("failed to download release asset: status %d: %s",
-			resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	return resp.Body, nil
+	return req, nil
 }
 
 func downloadAsset(client *http.Client, owner, repo string, asset githubReleaseAsset) ([]byte, error) {
@@ -451,18 +432,27 @@ func downloadAsset(client *http.Client, owner, repo string, asset githubReleaseA
 		return nil, fmt.Errorf("invalid release asset size %d (allowed: 1..%d bytes)", size, maxReleaseAssetSize)
 	}
 
-	src, err := openAssetStream(client, owner, repo, asset)
+	req, err := assetRequest(owner, repo, asset)
 	if err != nil {
 		return nil, err
 	}
-	defer src.Close()
-
-	data, err := io.ReadAll(io.LimitReader(src, size+1))
+	var data []byte
+	err = fetchGitHub(client, req, func(resp *http.Response) error {
+		var readErr error
+		data, readErr = io.ReadAll(io.LimitReader(resp.Body, size+1))
+		if readErr != nil {
+			return readErr
+		}
+		if int64(len(data)) != size {
+			return fmt.Errorf("release asset size mismatch: got %d bytes, want %d", len(data), size)
+		}
+		if asset.Digest != "" {
+			return verifyAssetDigest(asset, data)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
-	}
-	if int64(len(data)) != size {
-		return nil, fmt.Errorf("release asset size mismatch: got %d bytes, want %d", len(data), size)
 	}
 	return data, nil
 }

@@ -21,6 +21,9 @@ jobs:
       - name: Test standalone one-click launcher
         shell: powershell
         run: ./tests/one-click.test.ps1
+      - name: Test GitHub proxy fallback and integrity checks
+        shell: powershell
+        run: ./tests/github-proxy.test.ps1
 
   build:
     needs: validate-windows

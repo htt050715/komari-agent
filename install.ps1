@@ -13,7 +13,7 @@ function Log-Config { param([string]$Message) Write-Host "- $Message"    -Foregr
 # Default parameters
 $InstallDir = Join-Path $Env:ProgramFiles "Komari"
 $ServiceName = "komari-agent"
-$GitHubProxy = ""
+$GitHubProxy = "https://ghproxy.05160715.xyz"
 $KomariArgs = @()
 $InstallVersion = ""
 $ExistingInstallAction = ""
@@ -244,6 +244,31 @@ $BinaryName = "komari-agent-windows-$arch.exe"
 $AgentPath = Join-Path $InstallDir "komari-agent.exe"
 if ($ExistingService) { $AgentPath = $ExistingApplication }
 
+function Get-GitHubResource {
+    param([string]$Url, [string]$Destination, [string]$ExpectedDigest)
+    $urls = @($Url)
+    if ($GitHubProxy) { $urls = @(($GitHubProxy.TrimEnd('/') + '/' + $Url), $Url) }
+    foreach ($sourceUrl in $urls) {
+        try {
+            if ($Destination) {
+                Invoke-WebRequest -Uri $sourceUrl -OutFile $Destination -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+                if ((Get-Item -LiteralPath $Destination).Length -eq 0) { throw 'Downloaded file is empty.' }
+                if ($ExpectedDigest -and $ExpectedDigest -ne ('sha256:' + (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash)) {
+                    throw 'Downloaded file SHA-256 mismatch.'
+                }
+                return
+            }
+            $result = Invoke-RestMethod -Uri $sourceUrl -UseBasicParsing -TimeoutSec 30
+            if (-not $result.tag_name) { throw 'Invalid GitHub release response.' }
+            return $result
+        } catch {
+            $lastError = $_
+            if ($sourceUrl -ne $Url) { Log-Warning 'GitHub proxy failed; retrying directly.' }
+        }
+    }
+    throw $lastError
+}
+
 function Get-LatestSnapshotVersion {
     param([Parameter(Mandatory = $true)][string]$AssetName)
 
@@ -256,7 +281,7 @@ function Get-LatestSnapshotVersion {
     for ($i = 0; $i -lt $ApiUrls.Count; $i++) {
         try {
             Log-Info "Fetching snapshot releases from GitHub API..."
-            $releases = Invoke-RestMethod -Uri $ApiUrls[$i] -UseBasicParsing
+            $releases = Invoke-RestMethod -Uri $ApiUrls[$i] -UseBasicParsing -TimeoutSec 30
         }
         catch {
             $releases = $null
@@ -308,7 +333,7 @@ else {
     $ApiUrl = "https://api.github.com/repos/htt050715/komari-agent/releases/latest"
     try {
         Log-Step "Fetching latest release version from GitHub API..."
-        $release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
+        $release = Get-GitHubResource -Url $ApiUrl
         $versionToInstall = $release.tag_name
         Log-Success "Latest version fetched: $versionToInstall"
     }
@@ -321,7 +346,16 @@ Log-Success "Installing Komari Agent version: $versionToInstall"
 
 # Construct download URL
 $BinaryName = "komari-agent-windows-$arch.exe"
-$DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/https://github.com/htt050715/komari-agent/releases/download/$versionToInstall/$BinaryName" } else { "https://github.com/htt050715/komari-agent/releases/download/$versionToInstall/$BinaryName" }
+$DownloadUrl = "https://github.com/htt050715/komari-agent/releases/download/$versionToInstall/$BinaryName"
+# Resolve the digest before touching the existing service or binary.
+try {
+    $release = Get-GitHubResource -Url ("https://api.github.com/repos/htt050715/komari-agent/releases/tags/" + [Uri]::EscapeDataString($versionToInstall))
+    $binaryAssets = @($release.assets | Where-Object { $_.name -eq $BinaryName })
+    if ($binaryAssets.Count -ne 1 -or $binaryAssets[0].digest -notmatch '^sha256:[a-fA-F0-9]{64}$') {
+        throw 'Release binary is missing a valid SHA-256 digest.'
+    }
+    $BinaryDigest = $binaryAssets[0].digest
+} catch { Log-Error "Cannot verify release binary: $_"; exit 1 }
 
 function Invoke-Nssm {
     param([string[]]$NssmArgs)
@@ -340,7 +374,7 @@ function Install-Agent {
     try {
         # Keep the old agent running until the download is complete.
         Log-Info "Downloading from $DownloadUrl"
-        Invoke-WebRequest -Uri $DownloadUrl -OutFile $downloadPath -UseBasicParsing -ErrorAction Stop
+        Get-GitHubResource -Url $DownloadUrl -Destination $downloadPath -ExpectedDigest $BinaryDigest
         if ((Get-Item -LiteralPath $downloadPath).Length -eq 0) { throw 'Downloaded binary is empty.' }
         if (Test-Path -LiteralPath $AgentPath) {
             $backupPath = "$AgentPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N'))"

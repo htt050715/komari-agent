@@ -41,7 +41,7 @@ EUID=${EUID:-$(id -u)}
 # Default values
 service_name="komari-agent"
 target_dir="/opt/komari"
-github_proxy=""
+github_proxy="https://ghproxy.05160715.xyz"
 install_version="" # New parameter for specifying version
 install_dir_specified=false
 install_no_mirror=false # 关闭自动加速镜像
@@ -397,7 +397,10 @@ fi
 
 # Download with automatic mirror fallback.
 # 直连失败自动依次尝试常见 GitHub 加速镜像, 可用 --install-no-mirror 关闭.
-if [ -n "$github_proxy" ] || [ "$install_no_mirror" = "true" ]; then
+if [ -n "$github_proxy" ]; then
+    download_urls="${download_url}
+https://github.com/htt050715/komari-agent/releases/${download_path}/${file_name}"
+elif [ "$install_no_mirror" = "true" ]; then
     download_urls="$download_url"
 else
     download_urls="
