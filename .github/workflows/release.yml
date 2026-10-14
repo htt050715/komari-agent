@@ -62,5 +62,10 @@ jobs:
           elif [ "${{ matrix.goos }}" = "darwin" ]; then
             true
           fi
-          gh release upload ${{ github.event.release.tag_name }} $BINARY_NAME --repo ${{ github.repository }}
+          EXISTING=$(gh release view "${{ github.event.release.tag_name }}" --repo "${{ github.repository }}" --json assets --jq '.assets[].name')
+          if echo "$EXISTING" | grep -Fxq "$BINARY_NAME"; then
+            echo "$BINARY_NAME is already attached; preserving the published asset."
+          else
+            gh release upload "${{ github.event.release.tag_name }}" "$BINARY_NAME" --repo "${{ github.repository }}"
+          fi
         shell: bash

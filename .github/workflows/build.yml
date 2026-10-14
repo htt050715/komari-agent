@@ -6,7 +6,21 @@ on:
       - main
 
 jobs:
+  validate-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test agent without external ping targets
+        run: go test -timeout 60s -skip 'Test(ICMP|TCP|HTTP)Ping' ./...
+      - name: Test installer choices and rollback
+        shell: powershell
+        run: ./tests/install-windows.test.ps1
+
   build:
+    needs: validate-windows
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -31,7 +45,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.23"
+          go-version-file: go.mod
 
       - name: Build binary
         env:

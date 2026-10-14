@@ -20,6 +20,7 @@ concurrency:
 
 jobs:
   validate-ref:
+    if: ${{ github.repository == 'komari-monitor/komari-agent' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

@@ -29,6 +29,7 @@ type Config struct {
 	DisableCompression  bool    `json:"disable_compression" env:"AGENT_DISABLE_COMPRESSION"`       // 禁用v2传输压缩
 	PreferIPVersion     string  `json:"prefer_ip_version" env:"AGENT_PREFER_IP_VERSION"`           // 面板连接优先使用的 IP 版本：4 或 6
 
+	DisableStartupNotification bool `json:"disable_startup_notification" env:"AGENT_DISABLE_STARTUP_NOTIFICATION"` // Disable automatic Windows login notifications.
 }
 
 var GlobalConfig = &Config{}

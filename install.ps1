@@ -1,5 +1,7 @@
 # Windows PowerShell installation script for Komari Agent
 
+$ErrorActionPreference = 'Stop'
+
 # Logging functions with colors
 function Log-Info { param([string]$Message) Write-Host "$Message"    -ForegroundColor Cyan }
 function Log-Success { param([string]$Message) Write-Host "$Message"    -ForegroundColor Green }
@@ -14,16 +16,32 @@ $ServiceName = "komari-agent"
 $GitHubProxy = ""
 $KomariArgs = @()
 $InstallVersion = ""
+$ExistingInstallAction = ""
+$InstallDirExplicit = $false
 
 # Parse script arguments
 for ($i = 0; $i -lt $args.Count; $i++) {
     switch ($args[$i]) {
-        "--install-dir" { $InstallDir = $args[$i + 1]; $i++; continue }
+        "--install-dir" { $InstallDir = $args[$i + 1]; $InstallDirExplicit = $true; $i++; continue }
         "--install-service-name" { $ServiceName = $args[$i + 1]; $i++; continue }
         "--install-ghproxy" { $GitHubProxy = $args[$i + 1]; $i++; continue }
         "--install-version" { $InstallVersion = $args[$i + 1]; $i++; continue }
+        "--install-existing" { $ExistingInstallAction = $args[$i + 1]; $i++; continue }
         Default { $KomariArgs += $args[$i] }
     }
+}
+
+function Confirm-ExistingInstall {
+    param([bool]$Exists, [string]$Action)
+    if ($Action -and $Action -notin @('overwrite', 'cancel')) {
+        throw '--install-existing must be overwrite or cancel.'
+    }
+    if (-not $Exists) { return $true }
+    if ($Action) { return $Action -eq 'overwrite' }
+    Log-Warning 'An existing Komari directory or service was found.'
+    Write-Host '[1] Overwrite / upgrade (back up the binary and keep configuration)'
+    Write-Host '[2] Cancel (default)'
+    return (Read-Host 'Choose 1 or 2') -eq '1'
 }
 
 # Quote a value the way the Windows C runtime command-line parser expects,
@@ -62,6 +80,29 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         Log-Error "Please run this script as Administrator."
         exit 1
     }
+}
+
+# Detect the existing installation before downloading or changing any files.
+$ExistingService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$ExistingParameters = $null
+if ($ExistingService) {
+    $ExistingParameters = Get-ItemProperty -LiteralPath "HKLM:\SYSTEM\CurrentControlSet\Services\$ServiceName\Parameters" -ErrorAction SilentlyContinue
+    if (-not $ExistingParameters -or -not $ExistingParameters.Application) {
+        Log-Error 'The existing service is not an NSSM-managed Komari installation. No changes made.'
+        exit 1
+    }
+    $ExistingApplication = [Environment]::ExpandEnvironmentVariables($ExistingParameters.Application).Trim('"')
+    $ExistingDirectory = Split-Path -Path $ExistingApplication -Parent
+    if (-not $InstallDirExplicit) {
+        $InstallDir = $ExistingDirectory
+    } elseif ([IO.Path]::GetFullPath($InstallDir).TrimEnd('\') -ne [IO.Path]::GetFullPath($ExistingDirectory).TrimEnd('\')) {
+        Log-Error 'The service is installed in a different directory. Use its existing directory to upgrade, or another service name for a separate installation.'
+        exit 1
+    }
+}
+if (-not (Confirm-ExistingInstall -Exists ([bool]($ExistingService -or (Test-Path -LiteralPath $InstallDir))) -Action $ExistingInstallAction)) {
+    Log-Info 'Installation cancelled. Existing files and service were left untouched.'
+    exit 0
 }
 
 # Prepare GitHub proxy display
@@ -191,7 +232,7 @@ Log-Step "Installation configuration:"
 Log-Config "Service name: $ServiceName"
 Log-Config "Install directory: $InstallDir"
 Log-Config "GitHub proxy: $ProxyDisplay"
-Log-Config "Agent arguments: $($KomariArgs -join ' ')"
+Log-Config "Agent arguments: supplied values are hidden to protect credentials"
 if ($InstallVersion -ne "") {
     Log-Config "Specified agent version: $InstallVersion"
 } else {
@@ -201,46 +242,12 @@ if ($InstallVersion -ne "") {
 # Paths
 $BinaryName = "komari-agent-windows-$arch.exe"
 $AgentPath = Join-Path $InstallDir "komari-agent.exe"
-
-# Uninstall previous service and binary
-function Uninstall-Previous {
-    Log-Step "Checking for existing service..."
-    # Check if service exists using nssm status, as Get-Service might not work for nssm services if not properly registered
-    $serviceStatus = nssm status $ServiceName 2>&1
-    if ($serviceStatus -notmatch "SERVICE_STOPPED" -and $serviceStatus -notmatch "does not exist") {
-        Log-Info "Stopping service $ServiceName..."
-        nssm stop $ServiceName 2>&1 | Out-Null
-    }
-    # Attempt to remove the service using nssm
-    # We check if it exists first by trying to get its status.
-    # nssm remove will succeed if the service exists, and fail otherwise.
-    # We add confirm to avoid interactive prompts.
-    $removeOutput = nssm remove $ServiceName confirm 2>&1
-    if ($LASTEXITCODE -eq 0) {
-    }
-    elseif ($removeOutput -match "Can't open service! (The specified service does not exist as an installed service.)" -or $removeOutput -match "No such service" -or $removeOutput -match "does not exist") {
-        Log-Info "Service $ServiceName does not exist or was already removed."
-    }
-    else {
-        # If nssm remove fails for other reasons, try sc.exe delete as a fallback for older installations
-        $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        if ($svc) {
-            Stop-Service $ServiceName -Force -ErrorAction SilentlyContinue
-            sc.exe delete $ServiceName | Out-Null
-        }
-    }
-
-    if (Test-Path $AgentPath) {
-        Log-Warning "Removing old binary..."
-        Remove-Item $AgentPath -Force
-    }
-}
-Uninstall-Previous
+if ($ExistingService) { $AgentPath = $ExistingApplication }
 
 function Get-LatestSnapshotVersion {
     param([Parameter(Mandatory = $true)][string]$AssetName)
 
-    $ApiUrl = "https://api.github.com/repos/komari-monitor/komari-agent/releases?per_page=100"
+    $ApiUrl = "https://api.github.com/repos/htt050715/komari-agent/releases?per_page=100"
     $ApiUrls = @($ApiUrl)
     if ($GitHubProxy -ne "") {
         $ApiUrls = @("$GitHubProxy/$ApiUrl", $ApiUrl)
@@ -298,7 +305,7 @@ if ($InstallVersion -ne "") {
     }
 }
 else {
-    $ApiUrl = "https://api.github.com/repos/komari-monitor/komari-agent/releases/latest"
+    $ApiUrl = "https://api.github.com/repos/htt050715/komari-agent/releases/latest"
     try {
         Log-Step "Fetching latest release version from GitHub API..."
         $release = Invoke-RestMethod -Uri $ApiUrl -UseBasicParsing
@@ -314,36 +321,94 @@ Log-Success "Installing Komari Agent version: $versionToInstall"
 
 # Construct download URL
 $BinaryName = "komari-agent-windows-$arch.exe"
-$DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/https://github.com/komari-monitor/komari-agent/releases/download/$versionToInstall/$BinaryName" } else { "https://github.com/komari-monitor/komari-agent/releases/download/$versionToInstall/$BinaryName" }
+$DownloadUrl = if ($GitHubProxy) { "$GitHubProxy/https://github.com/htt050715/komari-agent/releases/download/$versionToInstall/$BinaryName" } else { "https://github.com/htt050715/komari-agent/releases/download/$versionToInstall/$BinaryName" }
 
-# Download and install
-New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-Log-Info "URL: $DownloadUrl"
-try {
-    Invoke-WebRequest -Uri $DownloadUrl -OutFile $AgentPath -UseBasicParsing
+function Invoke-Nssm {
+    param([string[]]$NssmArgs)
+    $null = & $nssmCmd.Source @NssmArgs 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "NSSM $($NssmArgs[0]) failed (exit $LASTEXITCODE)." }
 }
-catch {
-    Log-Error "Download failed: $_"
-    exit 1
-}
-Log-Success "Downloaded and saved to $AgentPath"
 
-# Register and start service
-Log-Step "Configuring Windows service with nssm..."
-$argString = $KomariArgs -join ' '
-# The application path is passed WITHOUT literal quotes: PowerShell already
-# quotes native arguments containing spaces on the command line, while
-# embedded quotes made nssm store a broken Application path (komari-agent#118).
-nssm install $ServiceName $AgentPath $argString
-# Set display name and startup type using nssm
-nssm set $ServiceName DisplayName "Komari Agent Service"
-nssm set $ServiceName Start SERVICE_AUTO_START
-nssm set $ServiceName AppExit Default Restart
-nssm set $ServiceName AppRestartDelay 5000
-# Start the service using nssm
-nssm start $ServiceName
-Log-Success "Service $ServiceName installed and started using nssm."
+function Install-Agent {
+    $downloadPath = Join-Path $InstallDir ('.komari-download-' + [guid]::NewGuid().ToString('N') + '.exe')
+    $backupPath = $null
+    $serviceTouched = $false
+    $binaryTouched = $false
+    $newServiceCreated = $false
+    $wasRunning = $ExistingService -and $ExistingService.Status -ne 'Stopped'
+    $oldArgs = if ($ExistingParameters) { [string]$ExistingParameters.AppParameters } else { '' }
+    try {
+        # Keep the old agent running until the download is complete.
+        Log-Info "Downloading from $DownloadUrl"
+        Invoke-WebRequest -Uri $DownloadUrl -OutFile $downloadPath -UseBasicParsing -ErrorAction Stop
+        if ((Get-Item -LiteralPath $downloadPath).Length -eq 0) { throw 'Downloaded binary is empty.' }
+        if (Test-Path -LiteralPath $AgentPath) {
+            $backupPath = "$AgentPath.backup-$(Get-Date -Format 'yyyyMMdd-HHmmss')-$([guid]::NewGuid().ToString('N'))"
+            Copy-Item -LiteralPath $AgentPath -Destination $backupPath -ErrorAction Stop
+            Log-Info "Previous binary backed up to $backupPath"
+        }
+        if ($ExistingService) {
+            $serviceTouched = $true
+            Stop-Service -Name $ServiceName -ErrorAction Stop
+            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+        $binaryTouched = $true
+        Copy-Item -LiteralPath $downloadPath -Destination $AgentPath -Force -ErrorAction Stop
+        $argString = ($KomariArgs | ForEach-Object { ConvertTo-CommandLineArg ([string]$_) }) -join ' '
+        if ($ExistingService) {
+            # Leave the service identity, account, working directory and environment intact.
+            if ($KomariArgs.Count -gt 0) {
+                Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $argString)
+            }
+        } else {
+            Invoke-Nssm -NssmArgs @('install', $ServiceName, $AgentPath)
+            $newServiceCreated = $true
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $argString)
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppDirectory', $InstallDir)
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'DisplayName', 'Komari Agent Service')
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'Start', 'SERVICE_AUTO_START')
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppExit', 'Default', 'Restart')
+            Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppRestartDelay', '5000')
+        }
+        Start-Service -Name $ServiceName -ErrorAction Stop
+        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    } catch {
+        $installError = $_
+        Log-Warning 'Installation failed. Restoring the previous installation...'
+        try {
+            if ($serviceTouched -or $newServiceCreated) {
+                Stop-Service -Name $ServiceName -ErrorAction Stop
+                (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            }
+            if ($binaryTouched) {
+                if ($backupPath) {
+                    Copy-Item -LiteralPath $backupPath -Destination $AgentPath -Force -ErrorAction Stop
+                } elseif (Test-Path -LiteralPath $AgentPath) {
+                    Remove-Item -LiteralPath $AgentPath -Force -ErrorAction Stop
+                }
+            }
+            if ($newServiceCreated) {
+                Invoke-Nssm -NssmArgs @('remove', $ServiceName, 'confirm')
+            } elseif ($serviceTouched) {
+                if ($KomariArgs.Count -gt 0) {
+                    Invoke-Nssm -NssmArgs @('set', $ServiceName, 'AppParameters', $oldArgs)
+                }
+                if ($wasRunning) { Start-Service -Name $ServiceName -ErrorAction Stop }
+            }
+        } catch {
+            Log-Error "Automatic rollback failed: $_. Backup retained at $backupPath"
+        }
+        throw $installError
+    } finally {
+        if (Test-Path -LiteralPath $downloadPath) {
+            Remove-Item -LiteralPath $downloadPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+try { Install-Agent } catch { Log-Error "Installation failed: $_"; exit 1 }
+Log-Success "Service $ServiceName installed / upgraded and started."
 
 Log-Success "Komari Agent installation completed!"
 Log-Config "Service name: $ServiceName"
-Log-Config "Arguments: $argString"
+Log-Config "Existing configuration files were preserved. Windows login notifications are disabled by default."
