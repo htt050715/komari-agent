@@ -98,9 +98,11 @@ function Invoke-OneClickInstall {
 
 function Invoke-SelectedInstall {
     Write-Host 'Komari 一键安装 / 覆盖升级' -ForegroundColor Cyan
+    Write-Host '安装器版本：1.5.14；自动检查并补齐安装所需环境。'
     Write-Host '仓库：htt050715/komari-agent；默认关闭开机登录通知。'
     $serviceName = 'komari-agent'
-    $installDir = Join-Path $env:ProgramFiles 'Komari'
+    $programFilesRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+    $installDir = Join-Path $programFilesRoot 'Komari'
     $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     $exists = [bool]($existingService -or (Test-Path -LiteralPath $installDir))
     $choice = Get-InstallChoice -Exists $exists

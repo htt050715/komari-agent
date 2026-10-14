@@ -1,6 +1,8 @@
 # Windows PowerShell installation script for Komari Agent
 
 $ErrorActionPreference = 'Stop'
+# Keep other enabled protocols while adding TLS 1.2 for Windows PowerShell.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 
 # Logging functions with colors
 function Log-Info { param([string]$Message) Write-Host "$Message"    -ForegroundColor Cyan }
@@ -11,7 +13,8 @@ function Log-Step { param([string]$Message) Write-Host "$Message"    -Foreground
 function Log-Config { param([string]$Message) Write-Host "- $Message"    -ForegroundColor White }
 
 # Default parameters
-$InstallDir = Join-Path $Env:ProgramFiles "Komari"
+$ProgramFilesRoot = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$InstallDir = Join-Path $ProgramFilesRoot "Komari"
 $ServiceName = "komari-agent"
 $GitHubProxy = "https://ghproxy.05160715.xyz"
 $KomariArgs = @()
@@ -50,9 +53,80 @@ function Confirm-ExistingInstall {
 # spaces such as C:\Users\John Doe\... (komari-monitor/komari#655).
 function ConvertTo-CommandLineArg {
     param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Value)
+    if ($Value.Length -eq 0) { return '""' }
     if ($Value -notmatch '[\s"]') { return $Value }
     $escaped = $Value -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1'
     return '"' + $escaped + '"'
+}
+
+function Get-InstallArchitecture {
+    param([string]$ProcessArchitecture = $env:PROCESSOR_ARCHITECTURE, [string]$NativeArchitecture = $env:PROCESSOR_ARCHITEW6432)
+    $architecture = if ($NativeArchitecture) { $NativeArchitecture } else { $ProcessArchitecture }
+    switch ($architecture) {
+        'AMD64' { return 'amd64' }
+        'ARM64' { return 'arm64' }
+        'x86' { return '386' }
+        default { throw "Unsupported system architecture: $architecture" }
+    }
+}
+
+# PowerShell 5.1 turns native stderr into ErrorRecords with 2>&1. Capture
+# both streams independently and use the process exit code for failures.
+function Invoke-NssmProcess {
+    param([string]$FilePath, [string[]]$NssmArgs)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $process.StartInfo.FileName = $FilePath
+    $process.StartInfo.Arguments = ($NssmArgs | ForEach-Object { ConvertTo-CommandLineArg ([string]$_) }) -join ' '
+    $process.StartInfo.UseShellExecute = $false
+    # Preserve the caller's console: legacy NSSM otherwise opens a usage dialog.
+    $process.StartInfo.CreateNoWindow = $false
+    $process.StartInfo.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
+    $process.StartInfo.RedirectStandardOutput = $true
+    $process.StartInfo.RedirectStandardError = $true
+    try {
+        if (-not $process.Start()) { throw 'Cannot launch NSSM.' }
+        $stdout = $process.StandardOutput.ReadToEndAsync()
+        $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(30000)) {
+            $process.Kill()
+            $process.WaitForExit()
+            throw 'NSSM timed out.'
+        }
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Output = $stdout.Result; ErrorOutput = $stderr.Result }
+    } finally { $process.Dispose() }
+}
+
+function Get-NssmVersion {
+    param([string]$FilePath)
+    $result = Invoke-NssmProcess -FilePath $FilePath -NssmArgs @('version')
+    $output = ($result.Output + "`n" + $result.ErrorOutput).Trim()
+    if ($result.ExitCode -eq 0 -and $output -match '(?im)^NSSM\s+\d+\.') { return $output }
+    # Stable 2.24 predates the version command and prints usage with exit 1.
+    if ($result.ExitCode -eq 1 -and $output -match 'NSSM: The non-sucking service manager' -and
+        $output -match '(?im)^Version\s+2\.24\b') { return 'NSSM 2.24 (legacy usage response)' }
+    throw "NSSM version probe failed (exit $($result.ExitCode))."
+}
+
+function Get-NssmArchive {
+    param([string]$Destination)
+    $name = 'nssm-2.24-101-g897c7ad.zip'
+    # SHA-256 recorded by microsoft/winget-pkgs for the unchanged official ZIP.
+    $expected = '99f5045fffbffb745d67fe3a065a953c4a3d9c253b868892d9b685b0ee7d07b8'
+    $githubUrl = "https://github.com/htt050715/komari-agent/releases/latest/download/$name"
+    $urls = @($githubUrl, "https://nssm.cc/ci/$name")
+    if ($GitHubProxy) { $urls = @(($GitHubProxy.TrimEnd('/') + '/' + $githubUrl)) + $urls }
+    foreach ($url in $urls) {
+        try {
+            Log-Info "Downloading NSSM from $url..."
+            Invoke-WebRequest -Uri $url -OutFile $Destination -UseBasicParsing -TimeoutSec 60 -ErrorAction Stop
+            if ((Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash -ne $expected) {
+                throw 'NSSM archive SHA-256 mismatch.'
+            }
+            return
+        } catch { $lastError = $_; Log-Warning 'NSSM download failed; trying the next source.' }
+    }
+    throw $lastError
 }
 
 # Ensure running as Administrator. Instead of failing, re-launch this script
@@ -109,12 +183,8 @@ if (-not (Confirm-ExistingInstall -Exists ([bool]($ExistingService -or (Test-Pat
 if ($GitHubProxy -ne '') { $ProxyDisplay = $GitHubProxy } else { $ProxyDisplay = '(direct)' }
 
 # Detect architecture early for constructing binary name
-switch ($env:PROCESSOR_ARCHITECTURE) {
-    'AMD64' { $arch = 'amd64' }
-    'ARM64' { $arch = 'arm64' }
-    'x86' { $arch = '386' }
-    Default { Log-Error "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE"; exit 1 }
-}
+try { $arch = Get-InstallArchitecture } catch { Log-Error $_; exit 1 }
+Log-Info "System architecture: $arch. Checking required service manager..."
 
 # Ensure installation directory exists for nssm and agent
 Log-Step "Ensuring installation directory exists: $InstallDir"
@@ -128,7 +198,7 @@ $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
 if ($nssmCmd) {
     Log-Info "nssm found in PATH at $($nssmCmd.Source)."
     try {
-        $nssmVersionOutput = nssm version 2>&1
+        $nssmVersionOutput = Get-NssmVersion -FilePath $nssmCmd.Source
         Log-Info "Detected nssm version: $nssmVersionOutput"
     }
     catch {
@@ -145,7 +215,7 @@ if (-not $nssmCmd) {
         $nssmCmd = Get-Command nssm -ErrorAction SilentlyContinue
         if ($nssmCmd) {
             try {
-                $nssmVersionOutput = nssm version 2>&1
+                $nssmVersionOutput = Get-NssmVersion -FilePath $nssmCmd.Source
             }
             catch {
                 Log-Warning "nssm from $InstallDir failed to execute 'nssm version'. Error: $_"
@@ -161,23 +231,26 @@ if (-not $nssmCmd) {
 # If still no usable nssm command, proceed to download
 if (-not $nssmCmd) {
     Log-Info "nssm not found or not usable. Attempting to download to $InstallDir..."
-    $NssmVersion = "2.24"
-    $NssmZipUrl = "https://nssm.cc/release/nssm-$NssmVersion.zip"
-    $TempNssmZipPath = Join-Path $env:TEMP "nssm-$NssmVersion.zip"
-    $TempExtractDir = Join-Path $env:TEMP "nssm_extract_temp"
+    $NssmVersion = "2.24-101-g897c7ad"
+    $tempId = [guid]::NewGuid().ToString('N')
+    $TempNssmZipPath = Join-Path $env:TEMP "komari-nssm-$tempId.zip"
+    $TempExtractDir = Join-Path $env:TEMP "komari-nssm-$tempId"
 
     try {
-        Log-Info "Downloading nssm from $NssmZipUrl..."
-        Invoke-WebRequest -Uri $NssmZipUrl -OutFile $TempNssmZipPath -UseBasicParsing
+        Get-NssmArchive -Destination $TempNssmZipPath
 
-        if (Test-Path $TempExtractDir) { Remove-Item -Recurse -Force $TempExtractDir }
-        New-Item -ItemType Directory -Path $TempExtractDir -Force | Out-Null
-        Expand-Archive -Path $TempNssmZipPath -DestinationPath $TempExtractDir -Force
+        if (Get-Command Expand-Archive -ErrorAction SilentlyContinue) {
+            Expand-Archive -Path $TempNssmZipPath -DestinationPath $TempExtractDir -Force
+        } else {
+            Add-Type -AssemblyName System.IO.Compression.FileSystem
+            [IO.Compression.ZipFile]::ExtractToDirectory($TempNssmZipPath, $TempExtractDir)
+        }
         
         $NssmSourceDirInsideZip = "nssm-$NssmVersion" # Used for Get-ChildItem search path
         # The path part within the extracted nssm folder, e.g., "nssm-2.24\win32"
-        # 'win32' nssm is used for both 'amd64' and 'arm64' PowerShell architectures.
-        $NssmArchSubDir = Join-Path "nssm-$NssmVersion" "win32"
+        # ARM64 Windows runs the x86 NSSM binary through its built-in emulation.
+        $nssmArch = if ($arch -eq 'amd64') { 'win64' } else { 'win32' }
+        $NssmArchSubDir = Join-Path "nssm-$NssmVersion" $nssmArch
         $NssmSourceExePath = Join-Path (Join-Path $TempExtractDir $NssmArchSubDir) "nssm.exe"
 
         if (-not (Test-Path $NssmSourceExePath)) {
@@ -196,6 +269,10 @@ if (-not $nssmCmd) {
             }
         }
         
+        $null = Get-NssmVersion -FilePath $NssmSourceExePath
+        if (Test-Path -LiteralPath $nssmExeToUse) {
+            Copy-Item -LiteralPath $nssmExeToUse -Destination ("$nssmExeToUse.backup-$tempId") -ErrorAction Stop
+        }
         Copy-Item -Path $NssmSourceExePath -Destination $nssmExeToUse -Force
 
         $env:Path = "$($InstallDir);$($env:Path)"
@@ -221,7 +298,7 @@ if (-not $nssmCmd) {
 
 # Final check that nssm is operational
 try {
-    $nssmVersionOutput = nssm version 2>&1
+    $nssmVersionOutput = Get-NssmVersion -FilePath $nssmCmd.Source
 }
 catch {
     Log-Error "nssm command failed to execute even after setup attempts. Please check the nssm installation and PATH. Error: $_"
@@ -359,8 +436,9 @@ try {
 
 function Invoke-Nssm {
     param([string[]]$NssmArgs)
-    $null = & $nssmCmd.Source @NssmArgs 2>&1
-    if ($LASTEXITCODE -ne 0) { throw "NSSM $($NssmArgs[0]) failed (exit $LASTEXITCODE)." }
+    $result = Invoke-NssmProcess -FilePath $nssmCmd.Source -NssmArgs $NssmArgs
+    # Do not echo output or arguments: service parameters may contain a Token.
+    if ($result.ExitCode -ne 0) { throw "NSSM $($NssmArgs[0]) failed (exit $($result.ExitCode))." }
 }
 
 function Install-Agent {

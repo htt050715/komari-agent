@@ -19,6 +19,8 @@ jobs:
           ./tests/install-windows.test.ps1
           ./tests/one-click.test.ps1
           ./tests/github-proxy.test.ps1
+          ./tests/nssm.test.ps1
+          Copy-Item vendor-tools/nssm-2.24-101-g897c7ad.zip .
       - name: Attach installers and documentation
         shell: powershell
         env:
@@ -28,7 +30,7 @@ jobs:
         run: |
           $release = gh release view $env:RELEASE_TAG --repo $env:RELEASE_REPO --json assets | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect release assets.' }
-          foreach ($asset in @('install.ps1', 'install-komari.cmd', 'install.sh', 'FORK_zh-CN.md')) {
+          foreach ($asset in @('install.ps1', 'install-komari.cmd', 'install.sh', 'FORK_zh-CN.md', 'nssm-2.24-101-g897c7ad.zip')) {
             if ($release.assets.name -notcontains $asset) {
               gh release upload $env:RELEASE_TAG $asset --repo $env:RELEASE_REPO
               if ($LASTEXITCODE -ne 0) { throw "Cannot attach $asset." }

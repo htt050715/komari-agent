@@ -24,6 +24,9 @@ jobs:
       - name: Test GitHub proxy fallback and integrity checks
         shell: powershell
         run: ./tests/github-proxy.test.ps1
+      - name: Test NSSM environment recovery
+        shell: powershell
+        run: ./tests/nssm.test.ps1
 
   build:
     needs: validate-windows

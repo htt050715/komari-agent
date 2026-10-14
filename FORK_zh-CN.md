@@ -24,7 +24,15 @@
 Windows 安装器必须取得 Release 的 SHA-256，校验通过后才替换旧程序。
 客户端版本 API 返回无效 JSON 时也会回退。设置了 `GITHUB_TOKEN` 的客户端请求只走直连，避免令牌泄露到代理。
 客户端可用环境变量 `KOMARI_GITHUB_PROXY` 更换代理，显式设置为空可禁用代理；
-安装器可用 `--install-ghproxy` 更换代理。NSSM 的非 GitHub 下载不走这个代理。
+安装器可用 `--install-ghproxy` 更换代理。
+
+安装器自动申请管理员权限、启用 TLS 1.2 并按实际 Windows 系统架构选取 Agent，
+32 位 PowerShell 运行在 64 位 Windows 上时也会选择正确的程序和默认目录。
+可用的现有 NSSM 会被复用，兼容旧版 2.24 的 usage 响应和原生程序的 stderr 输出。
+缺失或损坏时自动补齐 NSSM：依次尝试本仓库 Release 的代理下载、直连下载和官方 CI 链接，
+每个下载都必须匹配固定 SHA-256。备用包为官方原包 2.24-101-g897c7ad，
+与微软 winget 记录的 SHA-256 一致。NSSM 的非 GitHub 下载不走 GitHub 代理。
+补齐 NSSM 前不停止旧 Agent；如果仍失败，会停止安装并报告原因。
 
 下载仓库或 Release 中的 `install.ps1`，在 PowerShell 中运行：
 
@@ -62,8 +70,9 @@ go test -timeout 60s -skip 'Test(ICMP|TCP|HTTP)Ping' ./...
 powershell -NoProfile -File tests/install-windows.test.ps1
 powershell -NoProfile -File tests/one-click.test.ps1
 powershell -NoProfile -File tests/github-proxy.test.ps1
+powershell -NoProfile -File tests/nssm.test.ps1
 $env:CGO_ENABLED = '0'
-go build -trimpath -ldflags "-s -w -X github.com/komari-monitor/komari-agent/update.CurrentVersion=1.5.13" -o komari-agent-windows-amd64.exe
+go build -trimpath -ldflags "-s -w -X github.com/komari-monitor/komari-agent/update.CurrentVersion=1.5.14" -o komari-agent-windows-amd64.exe
 ```
 
 Release 文件名保持 `komari-agent-windows-amd64.exe`、`komari-agent-windows-arm64.exe`、
