@@ -13,6 +13,11 @@
 
 ## Windows 安装 / 覆盖升级
 
+推荐下载 [install-komari.cmd](https://github.com/htt050715/komari-agent/releases/latest/download/install-komari.cmd)，
+双击运行并确认管理员权限。只需要这一个文件，无需预装 Go 或 Git。
+已有服务时选择覆盖或取消，默认取消；全新安装时按提示填写面板地址和 Token。
+脚本校验下载的安装器，并固定使用它所属的 Release 版本。
+
 下载仓库或 Release 中的 `install.ps1`，在 PowerShell 中运行：
 
 ```powershell
@@ -47,6 +52,7 @@ NSSM 服务启动成功不等于面板连接成功，安装后请在面板确认
 ```powershell
 go test -timeout 60s -skip 'Test(ICMP|TCP|HTTP)Ping' ./...
 powershell -NoProfile -File tests/install-windows.test.ps1
+powershell -NoProfile -File tests/one-click.test.ps1
 $env:CGO_ENABLED = '0'
 go build -trimpath -ldflags "-s -w -X github.com/komari-monitor/komari-agent/update.CurrentVersion=1.5.12" -o komari-agent-windows-amd64.exe
 ```
@@ -57,3 +63,6 @@ Release 文件名保持 `komari-agent-windows-amd64.exe`、`komari-agent-windows
 上游三个公网 Ping 测试依赖外部站点、IPv6 连通性与原始套接字权限，以上命令排除它们。
 本 fork 保留提交构建和 Release 产物构建；快照、Docker 与自动生成发布说明仅手动运行，
 避免每次提交额外发布快照或覆盖手写的发布说明。
+
+修改 `install-one-click.ps1` 后，运行 `powershell -NoProfile -File build-one-click.ps1`
+重新生成单文件 `install-komari.cmd`。

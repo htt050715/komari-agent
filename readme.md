@@ -4,6 +4,7 @@
 
 默认关闭 Windows 登录通知，保留远程功能；自动更新从 `htt050715/komari-agent`
 获取版本。安装脚本检测旧安装并提供覆盖或取消选项，覆盖前备份旧程序。
+下载 [一键安装脚本 install-komari.cmd](https://github.com/htt050715/komari-agent/releases/latest/download/install-komari.cmd)，双击即可安装或覆盖升级。
 详见 [安装与更新说明](FORK_zh-CN.md)。
 
 ## 配置方式

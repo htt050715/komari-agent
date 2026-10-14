@@ -18,6 +18,9 @@ jobs:
       - name: Test installer choices and rollback
         shell: powershell
         run: ./tests/install-windows.test.ps1
+      - name: Test standalone one-click launcher
+        shell: powershell
+        run: ./tests/one-click.test.ps1
 
   build:
     needs: validate-windows
